@@ -6,30 +6,117 @@ Globals:
   Function:
     Timeout: 3
 
+Parameters:
+  ServiceName:
+    Type: String
+    Default: ppap-less
+    MaxLength: 50
+    MinLength: 5
+
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  IAMGroup:
+    Type: AWS::IAM::Group
     Properties:
-      CodeUri: .
-      FunctionName: lampy39
-      Handler: lambda_function.lambda_handler
-      Role: !GetAtt LambdaRole.Arn
-      Runtime: python3.9
-      Architectures:
-        - x86_64
-    Metadata:
-      BuildMethod: makefile
+      GroupName: !Sub ${ServiceName}-group
+      Policies:
+        - PolicyName: !Sub ${ServiceName}-group-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${ServiceName}-bucket/*"
+
+  IAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub ${ServiceName}-user
+      Groups:
+        - !Ref IAMGroup
+
+  IAMUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref IAMUser
+    DependsOn: IAMUser
+
+  IAMUserAccessKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${IAMUser}-credentials
+      SecretString: !Sub "{\"accessKeyId\":\"${IAMUserAccessKey}\",\"secretAccessKey\":\"${IAMUserAccessKey.SecretAccessKey}\"}"
+    DependsOn: IAMUserAccessKey
+
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub ${ServiceName}-role
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           -
-            Effect: "Allow"
-            Action:
-              sts:AssumeRole
+            Effect: Allow
+            Action: sts:AssumeRole
             Principal:
               Service: lambda.amazonaws.com
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Policies:
+        - PolicyName: !Sub ${ServiceName}-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*
+              -
+                Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+    DependsOn: IAMUserAccessKeySecret
+
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Environment:
+        Variables:
+          EXPIRE: 7  # TBD
+          INCOMING_WEBHOOK_URL: https://xxx  # TBD
+          SECRET: !Sub ${IAMUser}-credentials
+      FunctionName: !Sub ${ServiceName}
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+      MemorySize: 128
+      Architectures:
+        - x86_64
+    Metadata:
+      BuildMethod: makefile
+    DependsOn:
+      - LambdaRole
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ServiceName}-bucket
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            ExpirationInDays: 14
+            Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
