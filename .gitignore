@@ -1,4 +1,6 @@
 .aws-sam
+.vscode
+work
 *.toml
 *.yaml
 */__pycache__/*
